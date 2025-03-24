@@ -2,26 +2,23 @@
 
 'use client';
 
-import type React from 'react';
 import { useState, useEffect, forwardRef, useImperativeHandle, useRef } from 'react';
 
-// Define the interface for highlight ranges
+// ハイライト範囲のインターフェース
 export interface HighlightRange {
   start: number;
   end: number;
-  color?: string;
 }
 
-// Define the interface for the component props
+// コンポーネントのプロップス
 interface SelectableTextProps {
-  children: React.ReactNode;
-  defaultHighlightColor?: string;
+  children: string;
   className?: string;
   highlights?: HighlightRange[];
   onTextSelect?: (range: HighlightRange) => void;
 }
 
-// Define the interface for the imperative handle
+// 外部から呼び出せるメソッド
 export interface SelectableTextHandle {
   clearSelection: () => void;
   getSelectedText: () => string;
@@ -30,43 +27,82 @@ export interface SelectableTextHandle {
 }
 
 const SelectableText = forwardRef<SelectableTextHandle, SelectableTextProps>(
-  (
-    {
-      children,
-      defaultHighlightColor = '#ffeb3b80',
-      className = '',
-      highlights = [],
-      onTextSelect,
-    },
-    ref
-  ) => {
+  ({ children, className = '', highlights = [], onTextSelect }, ref) => {
+    const [text, setText] = useState<string>('');
+    const [internalHighlights, setInternalHighlights] = useState<HighlightRange[]>([]);
     const containerRef = useRef<HTMLDivElement>(null);
-    const textContentRef = useRef<string>('');
-    const [appliedHighlights, setAppliedHighlights] = useState<HighlightRange[]>([]);
 
-    // Process text content when component mounts or children change
+    // テキストコンテンツを設定
     useEffect(() => {
-      if (containerRef.current) {
-        // Store the text content for index calculations
-        textContentRef.current = containerRef.current.textContent || '';
+      if (typeof children === 'string') {
+        setText(children);
+      } else {
+        console.error('SelectableText only supports string children');
       }
     }, [children]);
 
-    // Apply highlights when highlights prop changes
+    // 外部ハイライトが変更されたときに内部ハイライトを更新
     useEffect(() => {
-      if (highlights.length > 0) {
-        // Clear existing highlights first
-        clearAllHighlights();
+      setInternalHighlights((prev) => {
+        // 外部ハイライトと内部ハイライトをマージ
+        const merged = [...prev];
 
-        // Apply new highlights
-        setAppliedHighlights(highlights);
-        highlights.forEach((range) => {
-          applyHighlightByIndices(range.start, range.end, range.color || defaultHighlightColor);
+        // 新しい外部ハイライトを追加
+        highlights.forEach((highlight) => {
+          // 既存のハイライトと重複していないか確認
+          const exists = merged.some((h) => h.start === highlight.start && h.end === highlight.end);
+
+          if (!exists) {
+            merged.push(highlight);
+          }
         });
-      }
-    }, [highlights, defaultHighlightColor]);
 
-    // Expose methods via the ref
+        return merged;
+      });
+    }, [highlights]);
+
+    // テキスト選択時の処理
+    const handleSelection = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      if (!containerRef.current || !containerRef.current.contains(range.commonAncestorContainer)) {
+        return;
+      }
+
+      // 選択範囲のテキストを取得
+      const selectedText = selection.toString();
+      if (!selectedText) return;
+
+      // 選択範囲の開始位置を計算
+      const fullText = text;
+      const preSelectionRange = document.createRange();
+      preSelectionRange.selectNodeContents(containerRef.current);
+      preSelectionRange.setEnd(range.startContainer, range.startOffset);
+      const startOffset = preSelectionRange.toString().length;
+
+      // 選択範囲の終了位置を計算
+      const endOffset = startOffset + selectedText.length;
+
+      // 新しいハイライト範囲を作成
+      const newHighlight: HighlightRange = {
+        start: startOffset,
+        end: endOffset,
+      };
+
+      // 内部ハイライトに追加
+      setInternalHighlights((prev) => [...prev, newHighlight]);
+
+      // コールバックを呼び出し
+      if (onTextSelect) {
+        onTextSelect(newHighlight);
+      }
+    };
+
+    // 外部から呼び出せるメソッドを定義
     useImperativeHandle(
       ref,
       () => ({
@@ -77,171 +113,65 @@ const SelectableText = forwardRef<SelectableTextHandle, SelectableTextProps>(
           return window.getSelection()?.toString() || '';
         },
         addHighlight: (range: HighlightRange) => {
-          const newHighlight = {
-            start: range.start,
-            end: range.end,
-            color: range.color || defaultHighlightColor,
-          };
-
-          setAppliedHighlights((prev) => [...prev, newHighlight]);
-          applyHighlightByIndices(range.start, range.end, newHighlight.color);
+          setInternalHighlights((prev) => [...prev, range]);
         },
         clearHighlights: () => {
-          clearAllHighlights();
-          setAppliedHighlights([]);
+          setInternalHighlights([]);
         },
       }),
-      [defaultHighlightColor]
+      []
     );
 
-    // Clear all highlights
-    const clearAllHighlights = () => {
-      if (containerRef.current) {
-        const highlights = containerRef.current.querySelectorAll('.highlighted-text');
-        highlights.forEach((highlight) => {
-          const parent = highlight.parentNode;
-          if (parent) {
-            // Move all children out of the highlight span
-            while (highlight.firstChild) {
-              parent.insertBefore(highlight.firstChild, highlight);
-            }
-            // Remove the empty highlight span
-            parent.removeChild(highlight);
-          }
-        });
-      }
-    };
+    // テキストをハイライト付きでレンダリング
+    const renderHighlightedText = () => {
+      if (!text) return null;
 
-    // Handle text selection
-    const handleSelection = () => {
-      const selection = window.getSelection();
-
-      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-        return;
+      // ハイライトがない場合はそのままテキストを返す
+      if (internalHighlights.length === 0) {
+        return text;
       }
 
-      // Get the current selection range
-      const range = selection.getRangeAt(0);
+      // ハイライト範囲の境界点を収集
+      const boundaries = new Set<number>();
+      boundaries.add(0);
+      boundaries.add(text.length);
 
-      // Check if the selection is within our component
-      if (containerRef.current && containerRef.current.contains(range.commonAncestorContainer)) {
-        // Calculate start and end indices
-        const indices = getIndicesFromRange(range);
-        if (indices) {
-          const newHighlight: HighlightRange = {
-            start: indices.start,
-            end: indices.end,
-            color: defaultHighlightColor,
-          };
-
-          // Add to applied highlights
-          setAppliedHighlights((prev) => [...prev, newHighlight]);
-
-          // Apply highlighting
-          applyHighlightByRange(range, defaultHighlightColor);
-
-          // Call the callback if provided
-          if (onTextSelect) {
-            onTextSelect(newHighlight);
-          }
+      internalHighlights.forEach((range) => {
+        if (range.start >= 0 && range.start <= text.length) {
+          boundaries.add(range.start);
         }
-      }
-    };
-
-    // Get start and end indices from a DOM Range
-    const getIndicesFromRange = (range: Range): HighlightRange | null => {
-      if (!containerRef.current || !textContentRef.current) return null;
-
-      const fullText = textContentRef.current;
-      const containerRange = document.createRange();
-      containerRange.selectNodeContents(containerRef.current);
-
-      // Calculate start index
-      const startRange = document.createRange();
-      startRange.setStart(containerRange.startContainer, containerRange.startOffset);
-      startRange.setEnd(range.startContainer, range.startOffset);
-      const startIndex = startRange.toString().length;
-
-      // Calculate end index
-      const endRange = document.createRange();
-      endRange.setStart(containerRange.startContainer, containerRange.startOffset);
-      endRange.setEnd(range.endContainer, range.endOffset);
-      const endIndex = endRange.toString().length;
-
-      return { start: startIndex, end: endIndex };
-    };
-
-    // Apply highlighting to a DOM Range
-    const applyHighlightByRange = (range: Range, color: string) => {
-      if (!range) return;
-
-      // Create a span element for highlighting
-      const highlightSpan = document.createElement('span');
-      highlightSpan.style.backgroundColor = color;
-      highlightSpan.className = 'highlighted-text';
-
-      try {
-        // Surround the selected content with the highlight span
-        range.surroundContents(highlightSpan);
-      } catch (e) {
-        console.error('Failed to highlight selection:', e);
-      }
-    };
-
-    // Apply highlighting based on start and end indices
-    const applyHighlightByIndices = (start: number, end: number, color: string) => {
-      if (!containerRef.current || start >= end) return;
-
-      // Get all text nodes in the container
-      const textNodes: Node[] = [];
-      const walker = document.createTreeWalker(containerRef.current, NodeFilter.SHOW_TEXT, null);
-
-      let node;
-      while ((node = walker.nextNode())) {
-        textNodes.push(node);
-      }
-
-      let currentIndex = 0;
-      let startNode: Node | null = null;
-      let startOffset = 0;
-      let endNode: Node | null = null;
-      let endOffset = 0;
-
-      // Find the nodes and offsets for the start and end indices
-      for (const node of textNodes) {
-        const nodeLength = node.textContent?.length || 0;
-
-        // Check if start index is in this node
-        if (startNode === null && start >= currentIndex && start < currentIndex + nodeLength) {
-          startNode = node;
-          startOffset = start - currentIndex;
+        if (range.end >= 0 && range.end <= text.length) {
+          boundaries.add(range.end);
         }
+      });
 
-        // Check if end index is in this node
-        if (endNode === null && end >= currentIndex && end <= currentIndex + nodeLength) {
-          endNode = node;
-          endOffset = end - currentIndex;
-          break;
-        }
+      // 境界点を昇順にソート
+      const sortedBoundaries = Array.from(boundaries).sort((a, b) => a - b);
 
-        currentIndex += nodeLength;
+      // 各境界点間のテキストセグメントを作成してレンダリング
+      const segments = [];
+      for (let i = 0; i < sortedBoundaries.length - 1; i++) {
+        const start = sortedBoundaries[i];
+        const end = sortedBoundaries[i + 1];
+        const segmentText = text.substring(start, end);
+
+        // このセグメントがハイライトされるかチェック
+        const isHighlighted = internalHighlights.some(
+          (range) => start >= range.start && end <= range.end
+        );
+
+        segments.push(
+          <span
+            key={`segment-${start}-${end}`}
+            style={isHighlighted ? { backgroundColor: '#ffeb3b80' } : undefined}
+          >
+            {segmentText}
+          </span>
+        );
       }
 
-      // Apply highlight if we found both start and end nodes
-      if (startNode && endNode) {
-        const range = document.createRange();
-        range.setStart(startNode, startOffset);
-        range.setEnd(endNode, endOffset);
-        applyHighlightByRange(range, color);
-      }
+      return segments;
     };
-
-    // Clean up highlights when component unmounts
-    useEffect(() => {
-      return () => {
-        clearAllHighlights();
-      };
-    }, []);
 
     return (
       <div
@@ -251,7 +181,7 @@ const SelectableText = forwardRef<SelectableTextHandle, SelectableTextProps>(
         onTouchEnd={handleSelection}
         style={{ position: 'relative', userSelect: 'text' }}
       >
-        {children}
+        {renderHighlightedText()}
       </div>
     );
   }
