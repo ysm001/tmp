@@ -16,6 +16,8 @@ interface SelectableTextProps {
   className?: string;
   highlights?: HighlightRange[];
   onTextSelect?: (range: HighlightRange) => void;
+  showTooltip?: boolean;
+  tooltipText?: string;
 }
 
 // 外部から呼び出せるメソッド
@@ -27,10 +29,22 @@ export interface SelectableTextHandle {
 }
 
 const SelectableText = forwardRef<SelectableTextHandle, SelectableTextProps>(
-  ({ children, className = '', highlights = [], onTextSelect }, ref) => {
+  (
+    {
+      children,
+      className = '',
+      highlights = [],
+      onTextSelect,
+      showTooltip = true,
+      tooltipText = '報告あり',
+    },
+    ref
+  ) => {
     const [text, setText] = useState<string>('');
     const [internalHighlights, setInternalHighlights] = useState<HighlightRange[]>([]);
     const containerRef = useRef<HTMLDivElement>(null);
+    const [lineElements, setLineElements] = useState<HTMLElement[]>([]);
+    const [highlightedLines, setHighlightedLines] = useState<Set<number>>(new Set());
 
     // テキストコンテンツを設定
     useEffect(() => {
@@ -163,6 +177,9 @@ const SelectableText = forwardRef<SelectableTextHandle, SelectableTextProps>(
         segments.push(
           <span
             key={`segment-${start}-${end}`}
+            data-highlighted={isHighlighted ? 'true' : 'false'}
+            data-start={start}
+            data-end={end}
             style={isHighlighted ? { backgroundColor: '#ffeb3b80' } : undefined}
           >
             {segmentText}
@@ -173,13 +190,114 @@ const SelectableText = forwardRef<SelectableTextHandle, SelectableTextProps>(
       return segments;
     };
 
+    // レンダリング後に行を検出してツールチップを配置
+    useEffect(() => {
+      if (!containerRef.current || !showTooltip) return;
+
+      // 既存のツールチップを削除
+      const existingTooltips = document.querySelectorAll('.line-tooltip');
+      existingTooltips.forEach((tooltip) => tooltip.remove());
+
+      // テキストの行を検出
+      const detectLines = () => {
+        if (!containerRef.current) return;
+
+        // 行の検出に使用する一時的な要素
+        const lineDetector = document.createElement('span');
+        lineDetector.style.visibility = 'hidden';
+        lineDetector.style.position = 'absolute';
+        lineDetector.style.whiteSpace = 'nowrap';
+        lineDetector.textContent = 'X'; // 高さ測定用のダミーテキスト
+        containerRef.current.appendChild(lineDetector);
+
+        const lineHeight = lineDetector.offsetHeight;
+        containerRef.current.removeChild(lineDetector);
+
+        // ハイライトされたセグメントを取得
+        const highlightedSegments = containerRef.current.querySelectorAll(
+          '[data-highlighted="true"]'
+        );
+
+        // 各ハイライトセグメントの行を特定
+        const lineMap = new Map<number, HTMLElement[]>();
+
+        highlightedSegments.forEach((segment) => {
+          const rect = segment.getBoundingClientRect();
+          const containerRect = containerRef.current!.getBoundingClientRect();
+
+          // セグメントの上端から行番号を計算
+          const relativeTop = rect.top - containerRect.top;
+          const lineIndex = Math.floor(relativeTop / lineHeight);
+
+          if (!lineMap.has(lineIndex)) {
+            lineMap.set(lineIndex, []);
+          }
+
+          lineMap.get(lineIndex)!.push(segment as HTMLElement);
+        });
+
+        // 各行にツールチップを追加
+        lineMap.forEach((segments, lineIndex) => {
+          // 行の最初のセグメントを基準にツールチップを配置
+          const firstSegment = segments[0];
+          const rect = firstSegment.getBoundingClientRect();
+          const containerRect = containerRef.current!.getBoundingClientRect();
+
+          // ツールチップを作成
+          const tooltip = document.createElement('div');
+          tooltip.className = 'line-tooltip';
+          tooltip.textContent = tooltipText;
+          tooltip.style.position = 'absolute';
+          tooltip.style.left = `${containerRect.width + 10}px`; // コンテナの右端から10px
+          tooltip.style.top = `${lineIndex * lineHeight + lineHeight / 2 - 10}px`; // 行の中央
+          tooltip.style.backgroundColor = '#333';
+          tooltip.style.color = 'white';
+          tooltip.style.padding = '2px 6px';
+          tooltip.style.borderRadius = '4px';
+          tooltip.style.fontSize = '12px';
+          tooltip.style.whiteSpace = 'nowrap';
+          tooltip.style.zIndex = '10';
+
+          containerRef.current!.appendChild(tooltip);
+        });
+      };
+
+      // 初回検出
+      setTimeout(detectLines, 100);
+
+      // ウィンドウサイズ変更時に再検出
+      const handleResize = () => {
+        // 既存のツールチップを削除
+        const existingTooltips = document.querySelectorAll('.line-tooltip');
+        existingTooltips.forEach((tooltip) => tooltip.remove());
+
+        // 行を再検出
+        detectLines();
+      };
+
+      window.addEventListener('resize', handleResize);
+
+      return () => {
+        window.removeEventListener('resize', handleResize);
+
+        // コンポーネントのアンマウント時にツールチップを削除
+        const existingTooltips = document.querySelectorAll('.line-tooltip');
+        existingTooltips.forEach((tooltip) => tooltip.remove());
+      };
+    }, [internalHighlights, showTooltip, tooltipText]);
+
     return (
       <div
         ref={containerRef}
         className={`selectable-text-container ${className}`}
         onMouseUp={handleSelection}
         onTouchEnd={handleSelection}
-        style={{ position: 'relative', userSelect: 'text' }}
+        style={{
+          position: 'relative',
+          userSelect: 'text',
+          lineHeight: '1.5',
+          wordWrap: 'break-word',
+        }}
       >
         {renderHighlightedText()}
       </div>
